@@ -96,20 +96,23 @@ recent first-blood advantage
 recent team win rate
 ```
 
-### 4. Compare the two teams
+### 4. Calculate team Elo
 
-A classifier needs one row per match, so the program subtracts Team B's form
-from Team A's form. For example:
+Team Elo estimates a team's strength from its previous match results.
+
+- Every team starts at `1500` Elo.
+- Elo is stored before the match occurs.
+- Elo is updated only after the match result is known.
+- A win against a stronger team increases Elo more than a win against a weaker
+  team.
+- Elo has a K-factor of `32`, controlling how quickly ratings change.
+
+For each match, the program calculates the probability that Team 0 wins:
 
 ```text
-diff_recent_winrate = Team A recent win rate - Team B recent win rate
-diff_hist_rating    = Team A player rating history - Team B player rating history
+Team 0 expected win probability =
+1 / (1 + 10 ^ ((Team 1 Elo - Team 0 Elo) / 400))
 ```
-
-A positive difference means Team A was stronger in that category before the
-match. The original team ordering in the dataset is randomly flipped for about
-half of the matches. This keeps the model from treating the dataset's
-`team_idx = 0` position as meaningful.
 
 ### 5. Train on the past and test on the future
 
