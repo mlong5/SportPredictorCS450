@@ -28,6 +28,13 @@ aggregates those records into one row per player per match before training.
 
 ## Run the model
 
+
+Since data/vct.duckdb provided by default, should work without specification of path
+```bash
+python main.py 
+```
+
+If desired, path can be specified
 ```bash
 python main.py path/to/vct.duckdb
 ```
