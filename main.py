@@ -26,6 +26,7 @@ RANDOM_SEED = 42
 PLAYER_STATS = ("acs", "rating", "kd", "kda", "first_bloods", "first_deaths", "fb_net")
 
 
+# Parse command-line arguments, including the database path and history settings.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("database", type=Path, help="Path to the VCT DuckDB database")
@@ -34,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Load match data from DuckDB and aggregate map statistics by player and match.
 def load_player_matches(database: Path) -> pd.DataFrame:
     """Aggregate map-level player stats to one player row per match."""
     if not database.is_file():
@@ -59,7 +61,8 @@ def load_player_matches(database: Path) -> pd.DataFrame:
     return players.sort_values(["match_date", "match_id"]).reset_index(drop=True)
 
 
-def add_derived_stats(players: pd.DataFrame) -> pd.DataFrame:
+# Calculate derived player statistics such as K/D, KDA, and first-blood difference.
+def add_derived_stats(players: pd.DataFrame) -> pd.DataFrame: 
     """Add rate statistics, guarding against zero deaths."""
     players = players.copy()
     deaths = players["deaths"].clip(lower=1)
@@ -69,11 +72,13 @@ def add_derived_stats(players: pd.DataFrame) -> pd.DataFrame:
     return players
 
 
+# Calculate rolling averages using only matches before the current match.
 def past_rolling_average(values: pd.Series, lookback: int, min_history: int) -> pd.Series:
     """Average preceding observations only; shift prevents target leakage."""
     return values.shift(1).rolling(lookback, min_periods=min_history).mean()
 
 
+# Add historical performance features for every player.
 def add_player_history(players: pd.DataFrame, lookback: int, min_history: int) -> pd.DataFrame:
     players = players.copy()
     for stat in PLAYER_STATS:
@@ -83,6 +88,7 @@ def add_player_history(players: pd.DataFrame, lookback: int, min_history: int) -
     return players
 
 
+# Aggregate individual player histories into team-level statistics.
 def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> pd.DataFrame:
     """Reduce player history to team form for each match."""
     history_columns = [f"hist_{stat}" for stat in PLAYER_STATS]
@@ -97,6 +103,7 @@ def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> p
     return teams
 
 
+# Convert two team rows into one match row using Team A minus Team B differences.
 def build_match_rows(teams: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
     """Create match-level differences: Team A feature minus Team B feature."""
     team0 = teams.loc[teams["team_idx"] == 0].set_index("match_id")
@@ -115,6 +122,7 @@ def build_match_rows(teams: pd.DataFrame, feature_names: list[str]) -> pd.DataFr
     return matches.dropna().sort_values("match_date").reset_index(drop=True)
 
 
+# Train the logistic-regression model and print evaluation results. #REFER TO
 def train_and_evaluate(matches: pd.DataFrame) -> None:
     feature_columns = [column for column in matches if column.startswith("diff_")]
     cutoff = int(len(matches) * (1 - TEST_FRACTION))
@@ -130,6 +138,7 @@ def train_and_evaluate(matches: pd.DataFrame) -> None:
     predicted, probabilities = model.predict(x_test), model.predict_proba(x_test)[:, 1]
     baseline = (test["diff_recent_winrate"] > 0).astype(int)
 
+    #print evaluation metrics HERE
     print(f"Matches used: {len(matches)} | train: {len(train)} | test: {len(test)}")
     print(f"Date range: {matches['match_date'].min():%Y-%m-%d} to {matches['match_date'].max():%Y-%m-%d}")
     print(f"Baseline accuracy: {accuracy_score(test['team_a_win'], baseline):.3f}")
@@ -141,6 +150,7 @@ def train_and_evaluate(matches: pd.DataFrame) -> None:
     print("Feature weights (positive favors Team A):\n", weights.round(3).to_string())
 
 
+# Run the complete data-processing, training, and evaluation pipeline.
 def main() -> None:
     args = parse_args()
     if args.lookback < 1 or args.min_history < 1 or args.min_history > args.lookback:
