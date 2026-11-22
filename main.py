@@ -139,11 +139,12 @@ def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> p
 
     # Elo ratings are stored per team ID. Teams not seen before start at 1500.
     # previous_lineups tracks consecutive rosters for roster continuity.
+    # Elo and roster continuity are initialized. Roster continuity starts neutral
+    # at 1.0 for a team without a previous observed lineup.
+    # Elo is written before each match outcome is processed, so the current match does not affect the Elo value.
     elo = {}
     previous_lineups = {}
 
-    # Elo is written before each match outcome is applied. Therefore, the
-    # feature will never contain information from the match being predicted.
     teams["team_elo"] = TEAM_ELO_INITIAL
     teams["roster_continuity"] = 1.0
 
@@ -159,15 +160,15 @@ def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> p
         # Neither feature is allowed to use the current match as history.
         for team_idx in (0, 1):
             row = rows.loc[team_idx]
-
-            # This is the original row index, not team_idx.
             team_row_index = match.index[match["team_idx"] == team_idx][0]
-
             team_id = int(row["team_id"])
-            elo.setdefault(team_id, TEAM_ELO_INITIAL)
 
+            elo.setdefault(team_id, TEAM_ELO_INITIAL)
             teams.loc[team_row_index, "team_elo"] = elo[team_id]
 
+
+
+            #comparing roster continuity here by checking if the current lineup is the same as the previous lineup for the team
             previous_lineup = previous_lineups.get(team_id)
             current_lineup = row["lineup"]
 
@@ -181,7 +182,10 @@ def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> p
                     else 1.0
                 )
 
+            #store contunity for this match before processing its result
             teams.loc[team_row_index, "roster_continuity"] = continuity
+
+            #Current lineup is baseline for team for the next match(replace with new)
             previous_lineups[team_id] = current_lineup
 
         team0 = rows.loc[0]
@@ -192,16 +196,20 @@ def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> p
         team0_elo = elo[team0_id]
         team1_elo = elo[team1_id]
 
-        # Convert Elo difference into the probability that Team 0 wins.
+        # Convert the Elo difference into an expected win probability:
+        # a larger Team 0 advantage produces a higher team0_expected value.
         team0_expected = 1.0 / (
             1.0 + 10 ** ((team1_elo - team0_elo) / 400.0)
         )
         team1_expected = 1.0 - team0_expected
 
+        # team_won is 1 for a win and 0 for a loss.
         team0_score = float(team0["team_won"])
         team1_score = float(team1["team_won"])
 
-        # Update ratings only after assigning the pre-match values above.
+        # Elo update is: prior Elo + K * (actual result - expected result).
+        # This block runs only after Team 0 and Team 1 Elo values for the
+        # current match have been saved, preventing target leakage.
         elo[team0_id] = (
             team0_elo
             + TEAM_ELO_K * (team0_score - team0_expected)
@@ -275,7 +283,7 @@ def main() -> None:
 
     feature_names = (
         [f"hist_{stat}" for stat in PLAYER_STATS]
-        + ["recent_winrate", "team_elo"]
+        + ["recent_winrate", "team_elo","roster_continuity"]
     )
 
     matches = build_match_rows(teams, feature_names)
