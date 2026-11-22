@@ -25,6 +25,13 @@ TEST_FRACTION = 0.20
 RANDOM_SEED = 42
 PLAYER_STATS = ("acs", "rating", "kd", "kda", "first_bloods", "first_deaths", "fb_net")
 
+# Add'l feature Elo constants:
+# - Every team starts with the same rating of 1500.
+# - TEAM_ELO_K controls how much a match result changes the rating.
+# - A K value of 32 produces moderate, gradual rating changes.
+TEAM_ELO_INITIAL = 1500.0
+TEAM_ELO_K = 32.0
+
 
 # Parse command-line arguments, including the database path and history settings.
 def parse_args() -> argparse.Namespace:
@@ -95,16 +102,116 @@ def add_player_history(players: pd.DataFrame, lookback: int, min_history: int) -
 
 # Aggregate individual player histories into team-level statistics.
 def build_team_rows(players: pd.DataFrame, lookback: int, min_history: int) -> pd.DataFrame:
-    """Reduce player history to team form for each match."""
+    """Reduce player history to team-level features for each match."""
     history_columns = [f"hist_{stat}" for stat in PLAYER_STATS]
+
     teams = (
-        players.groupby(["match_id", "match_date", "team_idx", "team_id"], as_index=False)
-        .agg(**{column: (column, "mean") for column in history_columns}, team_won=("team_won", "first"))
-        .sort_values(["match_date", "match_id"])
+        players.groupby(
+            ["match_id", "match_date", "team_idx", "team_id"],
+            as_index=False,
+        )
+        .agg(
+            **{column: (column, "mean") for column in history_columns},
+            team_won=("team_won", "first"),
+            lineup=("player_id", lambda values: frozenset(values.dropna().unique())),
+        )
+        .sort_values(["match_date", "match_id", "team_idx"])
+        .reset_index(drop=True)
     )
+
+    # Existing team win rate remains a team-level feature. This uses a shift
+    # internally, so the result for each match uses only previous matches.
     teams["recent_winrate"] = teams.groupby("team_id", sort=False)["team_won"].transform(
         lambda values: past_rolling_average(values, lookback, min_history)
     )
+
+    # Elo changes below are match outcomes that occur after both teams receive
+    # their team_elo value. The following match will observe the new rating.
+    
+    # Elo must be updated by match date. Sorting the match IDs here ensures
+    # ratings are created only from matches that occurred earlier.
+    # Elo must be precoessed in chronological match order for feature to work
+    ordered_matches = (
+        teams[["match_id", "match_date"]]
+        .drop_duplicates()
+        .sort_values(["match_date", "match_id"])
+    )
+
+    # Elo ratings are stored per team ID. Teams not seen before start at 1500.
+    # previous_lineups tracks consecutive rosters for roster continuity.
+    elo = {}
+    previous_lineups = {}
+
+    # Elo is written before each match outcome is applied. Therefore, the
+    # feature will never contain information from the match being predicted.
+    teams["team_elo"] = TEAM_ELO_INITIAL
+    teams["roster_continuity"] = 1.0
+
+    for match_id in ordered_matches["match_id"]:
+        match = teams.loc[teams["match_id"] == match_id]
+        rows = match.set_index("team_idx")
+
+        # Elo requires exactly one Team 0 row and one Team 1 row.
+        if set(rows.index) != {0, 1}:
+            continue
+
+        # Assign Elo and roster continuity before processing the match outcome.
+        # Neither feature is allowed to use the current match as history.
+        for team_idx in (0, 1):
+            row = rows.loc[team_idx]
+
+            # This is the original row index, not team_idx.
+            team_row_index = match.index[match["team_idx"] == team_idx][0]
+
+            team_id = int(row["team_id"])
+            elo.setdefault(team_id, TEAM_ELO_INITIAL)
+
+            teams.loc[team_row_index, "team_elo"] = elo[team_id]
+
+            previous_lineup = previous_lineups.get(team_id)
+            current_lineup = row["lineup"]
+
+            if previous_lineup is None:
+                continuity = 1.0
+            else:
+                union = previous_lineup | current_lineup
+                continuity = (
+                    len(previous_lineup & current_lineup) / len(union)
+                    if union
+                    else 1.0
+                )
+
+            teams.loc[team_row_index, "roster_continuity"] = continuity
+            previous_lineups[team_id] = current_lineup
+
+        team0 = rows.loc[0]
+        team1 = rows.loc[1]
+        team0_id = int(team0["team_id"])
+        team1_id = int(team1["team_id"])
+
+        team0_elo = elo[team0_id]
+        team1_elo = elo[team1_id]
+
+        # Convert Elo difference into the probability that Team 0 wins.
+        team0_expected = 1.0 / (
+            1.0 + 10 ** ((team1_elo - team0_elo) / 400.0)
+        )
+        team1_expected = 1.0 - team0_expected
+
+        team0_score = float(team0["team_won"])
+        team1_score = float(team1["team_won"])
+
+        # Update ratings only after assigning the pre-match values above.
+        elo[team0_id] = (
+            team0_elo
+            + TEAM_ELO_K * (team0_score - team0_expected)
+        )
+        elo[team1_id] = (
+            team1_elo
+            + TEAM_ELO_K * (team1_score - team1_expected)
+        )
+        #end of ELO chunk for calculation of team Elo based on match outcome from inital elo given
+
     return teams
 
 
@@ -158,13 +265,21 @@ def train_and_evaluate(matches: pd.DataFrame) -> None:
 # Run the complete data-processing, training, and evaluation pipeline.
 def main() -> None:
     args = parse_args()
+
     if args.lookback < 1 or args.min_history < 1 or args.min_history > args.lookback:
         raise ValueError("min-history must be at least 1 and no greater than lookback.")
+
     players = add_derived_stats(load_player_matches(args.database))
     players = add_player_history(players, args.lookback, args.min_history)
     teams = build_team_rows(players, args.lookback, args.min_history)
-    feature_names = [f"hist_{stat}" for stat in PLAYER_STATS] + ["recent_winrate"]
-    train_and_evaluate(build_match_rows(teams, feature_names))
+
+    feature_names = (
+        [f"hist_{stat}" for stat in PLAYER_STATS]
+        + ["recent_winrate", "team_elo"]
+    )
+
+    matches = build_match_rows(teams, feature_names)
+    train_and_evaluate(matches)
 
 
 if __name__ == "__main__":
