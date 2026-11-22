@@ -19,8 +19,7 @@ python3 -m pip install -r requirements.txt
 
 Pass the path to a DuckDB file that has these two tables:
 
-- `matches`: `match_id`, `utc_timestamp`, `team0_id`, `team1_id`, `score0`, and
-  `score1`
+- `matches`: `match_id`, `utc_timestamp`, `team0_id`, `team1_id`, `score0`, and `score1`
 - `player_map`: `match_id`, `team_idx`, `player_id`, `acs_all`, `rating_all`,
   `kills_all`, `deaths_all`, `assists_all`, `fk_all`, and `fd_all`
 
