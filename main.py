@@ -28,8 +28,13 @@ PLAYER_STATS = ("acs", "rating", "kd", "kda", "first_bloods", "first_deaths", "f
 
 # Parse command-line arguments, including the database path and history settings.
 def parse_args() -> argparse.Namespace:
+    default_database = Path(__file__).parent / "data" / "vct.duckdb"
+    #defined default database path as vct.duckdb in the same directory as the script
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("database", type=Path, help="Path to the VCT DuckDB database")
+
+    #nargs for optional path argument, default to vct.duckdb if not provided
+    parser.add_argument("database", type=Path,nargs='?', default=default_database, help="Path to the VCT DuckDB database")
     parser.add_argument("--lookback", type=int, default=LOOKBACK, help="Prior matches to average")
     parser.add_argument("--min-history", type=int, default=MIN_HISTORY, help="Prior matches required")
     return parser.parse_args()
